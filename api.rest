@@ -1,0 +1,26 @@
+POST http://localhost:8020/api
+Content-Type: application/json
+X-API-Key: abc
+
+{
+    "url": "https://google.com",
+    "custom_id": "ini-google-nyet",
+    "meta": {
+        "title": "Google",
+        "description": "the #1 search engine in the world",
+        "image": "https://google.com/image"
+    }
+}
+
+### GET ALL
+
+GET http://localhost:8020/api/a?page=1
+Content-Type: application/json
+X-API-Key: abc
+
+
+### DELETE BY ID
+
+DELETE http://localhost:8020/api/a/6c9a1
+Content-Type: application/json
+X-API-Key: abc
