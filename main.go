@@ -24,11 +24,14 @@ type ShortURL struct {
 	LastVisitedAt time.Time         `json:"last_visited_at"`
 	CreatedAt     time.Time         `json:"created_at"`
 	UpdatedAt     time.Time         `json:"updated_at"`
+	Path		  string 			`json:"path"`
 }
 
 type JSONResponse struct {
-	Status  string `json:"status"`
-	Message string `json:"message"`
+	Status  string     `json:"status"`
+	Message string     `json:"message"`
+	Data    *ShortURL  `json:"data"`
+	Results []ShortURL `json:"results"`
 }
 
 // MetaScanner is a custom type that implements the sql.Scanner interface
@@ -80,7 +83,7 @@ func main() {
 	apiRouter := r.PathPrefix("/api").Subrouter()
 	apiRouter.Use(apiKeyMiddleware)
 
-	apiRouter.HandleFunc("", createShortURL).Methods("POST")
+	apiRouter.HandleFunc("", createShortURLWithScrape).Methods("POST")
 	apiRouter.HandleFunc("/{space}", getURLs).Methods("GET")
 	apiRouter.HandleFunc("/{space}/{id}", deleteURL).Methods("DELETE")
 
@@ -131,7 +134,7 @@ func createShortURL(w http.ResponseWriter, r *http.Request) {
 	// Parse the request body as JSON
 	var requestData struct {
 		URL     string            `json:"url"`
-		CustomID string          `json:"custom_id"`
+		CustomID string           `json:"custom_id"`
 		Meta    map[string]string `json:"meta"`
 	}
 
@@ -180,11 +183,111 @@ func createShortURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Respond with the short URL
-	shortURL := fmt.Sprintf("/%s/%s", space, id)
-	w.WriteHeader(http.StatusCreated)
-	w.Write([]byte(shortURL))
+	// Respond with the short URL (json)
+	data := ShortURL{
+		ID:      id,
+		URL:     requestData.URL,
+		Meta:    requestData.Meta,
+		Path:    "/"+space+"/"+id,
+	}
+	response := JSONResponse{Status: "success", Message: "Short URL created successfully", Data: &data}
+	respondJSON(w, http.StatusCreated, response)
 }
+
+func createShortURLWithScrape(w http.ResponseWriter, r *http.Request) {
+	// Initialize SQLite database with the current year's hash
+	outputDir := getOutputDirFromArgs()
+	currentYear := getHashedYear(time.Now().Year())
+	dbFile := filepath.Join(outputDir, currentYear+".db")
+
+	// Close the existing database connection if it's open
+	if db != nil {
+		db.Close()
+	}
+
+	// Initialize a new SQLite database with the current year's hash
+	initDB(dbFile)
+
+	space := currentYear
+
+	// Parse the request body as JSON
+	var requestData struct {
+		URL      string            `json:"url"`
+		CustomID string            `json:"custom_id"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&requestData); err != nil {
+		http.Error(w, "Failed to parse request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate input
+	if requestData.URL == "" {
+		http.Error(w, "URL is required", http.StatusBadRequest)
+		return
+	}
+
+	// Use custom ID if provided, generate a new one otherwise
+	var id string
+	if requestData.CustomID != "" {
+		// Check if the custom ID is available in the database
+		if idExists(requestData.CustomID) {
+			http.Error(w, "Custom ID is already in use", http.StatusBadRequest)
+			return
+		}
+		id = requestData.CustomID
+	} else {
+		// Generate a unique ID (hash of current time)
+		id = generateUniqueID(space, requestData.URL)
+	}
+
+	// Scrape metadata from the provided URL
+	meta, err := scrapePageMetadata(requestData.URL)
+	if err != nil {
+		log.Println("Error scraping metadata:", err)
+	}
+
+	fmt.Println("Scraped metadata:", meta)
+
+	// Convert the meta map to a MetaScanner
+	metaScanner := ConvertPageMetadataToMetaScanner(meta)
+
+	// Convert the meta map to a JSON string
+	metaJSON, err := json.Marshal(metaScanner)
+	if err != nil {
+		http.Error(w, "Failed to convert meta to JSON string", http.StatusInternalServerError)
+		return
+	}
+
+	// Insert the short URL into the database with the parsed meta values
+	createdAt := time.Now()
+	_, err = db.Exec(`
+		INSERT INTO short_urls (id, url, meta, visited, last_visited_at, created_at, updated_at)
+		VALUES (?, ?, ?, 0, NULL, ?, ?)
+	`, id, requestData.URL, string(metaJSON), createdAt, createdAt)
+	
+	if err != nil {
+		log.Println("Error inserting short URL into the database:", err)
+		http.Error(w, "Failed to create short URL", http.StatusInternalServerError)
+		return
+	}
+
+	// Respond with the short URL and scraped metadata (json)
+	data := ShortURL{
+		ID:            id,
+		URL:           requestData.URL,
+		Meta:          metaScanner, // Use the converted MetaScanner
+		Path:          "/" + space + "/" + id,
+		LastVisitedAt: time.Time{},
+		CreatedAt:     createdAt,
+		UpdatedAt:     createdAt,
+	}
+
+	response := JSONResponse{Status: "success", Message: "Short URL created successfully", Data: &data}
+	respondJSON(w, http.StatusCreated, response)
+}
+
 
 func getURLs(w http.ResponseWriter, r *http.Request) {
 	// Extract space parameter from the URL path
@@ -256,7 +359,8 @@ func getURLs(w http.ResponseWriter, r *http.Request) {
 		if lastVisitedAt.Valid {
 			shortURL.LastVisitedAt = lastVisitedAt.Time
 		}
-	
+
+		shortURL.Path = "/" + space + "/" + shortURL.ID
 		shortURLs = append(shortURLs, shortURL)
 	}
 

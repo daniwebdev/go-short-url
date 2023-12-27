@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/PuerkitoBio/goquery"
 )
 
 func idExists(id string) bool {
@@ -130,4 +132,63 @@ func respondJSON(w http.ResponseWriter, statusCode int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	w.Write(responseJSON)
+}
+
+type PageMetadata struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	ImageURL    string `json:"image_url"`
+}
+
+func scrapePageMetadata(url string) (*PageMetadata, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch URL: %s", resp.Status)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	meta := &PageMetadata{}
+
+	// Get title
+	meta.Title = doc.Find("title").Text()
+
+	// Get description
+	doc.Find("meta[name=description]").Each(func(i int, s *goquery.Selection) {
+		meta.Description, _ = s.Attr("content")
+	})
+
+	// Try to get og:image
+	doc.Find("meta[property=og:image]").Each(func(i int, s *goquery.Selection) {
+		meta.ImageURL, _ = s.Attr("content")
+	})
+
+	// If og:image is empty, try to get Twitter card image
+	if meta.ImageURL == "" {
+		doc.Find("meta[name='twitter:image']").Each(func(i int, s *goquery.Selection) {
+			meta.ImageURL, _ = s.Attr("content")
+		})
+	}
+
+	return meta, nil
+}
+
+// ConvertPageMetadataToMetaScanner converts *PageMetadata to MetaScanner
+func ConvertPageMetadataToMetaScanner(pageMeta *PageMetadata) MetaScanner {
+	metaScanner := make(MetaScanner)
+	if pageMeta != nil {
+		metaScanner["title"] = pageMeta.Title
+		metaScanner["description"] = pageMeta.Description
+		metaScanner["image"] = pageMeta.ImageURL
+	}
+
+	return metaScanner
 }
