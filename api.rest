@@ -18,3 +18,10 @@ X-API-Key: abc
 DELETE http://localhost:8020/api/a/f74f9
 Content-Type: application/json
 X-API-Key: abc
+
+
+### GET BY ID
+
+GET http://localhost:8020/api/a/613f5
+Content-Type: application/json
+X-API-Key: abc
